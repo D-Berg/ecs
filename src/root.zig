@@ -4,6 +4,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
+const assert = std.debug.assert;
 const _ = std.MultiArrayList;
 
 const example_structs = @import("example_structs.zig");
@@ -20,6 +21,7 @@ test "basic add functionality" {
     try testing.expect(add(3, 7) == 10);
 }
 
+/// Column in a table
 const ComponentStorage = struct {
     size: usize,
     len: usize,
@@ -33,16 +35,40 @@ const ComponentStorage = struct {
         };
     }
 
+    fn append(self: *ComponentStorage, gpa: Allocator, value: anytype) !void {
+        const bytes = std.mem.asBytes(&value);
+        try self.data.appendSlice(gpa, bytes);
+
+        assert(bytes.len % self.size == 0);
+        assert(bytes.len / self.size == 1);
+
+        self.len += 1;
+    }
+
     fn get(self: *const ComponentStorage, comptime Component: type, idx: usize) Component {
+        assert(idx < self.len);
+        assert(@sizeOf(Component) == self.size);
         const start = idx * self.size;
         const end = (idx + 1) * self.size;
-        return std.mem.bytesToValue(Component, self.data[start..end]);
+        return std.mem.bytesToValue(Component, self.data.items[start..end]);
     }
 
     fn getPtr(self: *const ComponentStorage, comptime Component: type, idx: usize) *Component {
+        assert(idx < self.len);
+        assert(@sizeOf(Component) == self.size);
         const start = idx * self.size;
         const end = (idx + 1) * self.size;
-        return @alignCast(std.mem.bytesAsValue(Component, self.data[start..end]));
+        return @alignCast(std.mem.bytesAsValue(Component, self.data.items[start..end]));
+    }
+
+    fn getSlice(self: *const ComponentStorage, comptime Component: type) []Component {
+        assert(@sizeOf(Component) == self.size);
+        return @alignCast(@ptrCast(self.data.items));
+    }
+
+    fn getConstSlice(self: *const ComponentStorage, comptime Component: type) []const Component {
+        assert(@sizeOf(Component) == self.size);
+        return @alignCast(@ptrCast(self.data.items));
     }
 };
 
@@ -216,35 +242,36 @@ test "api" {
     defer ecs.deinit(gpa);
 
     const player = try ecs.addEntity(gpa);
-
-    _ = player;
+    try ecs.addComponent(gpa, player, Position, .{ .x = 3, .y = 3 });
 }
 
 test "store position" {
     const gpa = std.testing.allocator;
-    var storage = ComponentStorage{
-        .len = 0,
-        .data = .empty,
-        .size = @sizeOf(Position),
-    };
+    var storage: ComponentStorage = .empty(Position);
     defer storage.data.deinit(gpa);
 
-    try storage.data.appendSlice(gpa, std.mem.asBytes(&Position{ .x = 5, .y = 3 }));
+    try storage.append(gpa, Position{ .x = 5, .y = 3 });
+    try storage.append(gpa, Position{ .x = 10, .y = 8 });
 
-    const current_pos: *Position = @alignCast(std.mem.bytesAsValue(Position, storage.data.items[0..storage.size]));
+    const current_pos = storage.getPtr(Position, 0);
 
     try std.testing.expectEqual(5, current_pos.x);
 
     current_pos.x = 3;
 
-    const updated_pos: *Position = @alignCast(std.mem.bytesAsValue(Position, storage.data.items[0..storage.size]));
+    const updated_pos = storage.get(Position, 0);
     try std.testing.expectEqual(3, updated_pos.x);
 
-    const positions: []Position = @alignCast(@ptrCast(storage.data.items));
+    const positions: []Position = storage.getSlice(Position);
+    positions[1].y = 10;
 
-    std.debug.print("byte_len = {}\n", .{storage.data.items.len});
-    std.debug.print("pos_len = {}\n", .{positions.len});
-    for (positions) |p| {
+    for (positions) |*p| {
+        p.x += 1;
+        std.debug.print("p = {}\n", .{p});
+    }
+
+    for (storage.getConstSlice(Position)) |*p| {
+        // p.x += 1;
         std.debug.print("p = {}\n", .{p});
     }
 }
