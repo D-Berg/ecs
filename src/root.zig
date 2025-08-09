@@ -39,9 +39,15 @@ const ComponentStorage = struct {
         const bytes = std.mem.asBytes(&value);
         try self.data.appendSlice(gpa, bytes);
 
-        assert(bytes.len % self.size == 0);
         assert(bytes.len / self.size == 1);
 
+        self.len += 1;
+    }
+
+    /// add a component by bytes
+    fn appendBytes(self: *ComponentStorage, gpa: Allocator, bytes: []const u8) !void {
+        assert(bytes.len == self.size);
+        try self.data.appendSlice(gpa, bytes);
         self.len += 1;
     }
 
@@ -70,6 +76,38 @@ const ComponentStorage = struct {
         assert(@sizeOf(Component) == self.size);
         return @alignCast(@ptrCast(self.data.items));
     }
+
+    fn getConstBytes(self: *const ComponentStorage, row_id: RowID) []const u8 {
+        const idx = @intFromEnum(row_id);
+        const start = idx * self.size;
+        const end = (idx + 1) * self.size;
+        return self.data.items[start..end];
+    }
+
+    fn removeRow(self: *ComponentStorage, row_id: RowID) void {
+        const idx = getIdx(row_id, self.size);
+        var i = idx.end - 1;
+        while (idx.start < i) : (i -= 1) {
+            _ = self.data.swapRemove(i);
+        }
+    }
+
+    const Idx = struct {
+        row: usize,
+        start: usize,
+        end: usize,
+    };
+
+    fn getIdx(row_id: RowID, size: usize) Idx {
+        const row = @intFromEnum(row_id);
+        const start = row * size;
+        const end = (row + 1) * size;
+        return .{
+            .row = row,
+            .start = start,
+            .end = end,
+        };
+    }
 };
 
 /// Table where column
@@ -87,7 +125,6 @@ const Archetype = struct {
         for (self.components.values()) |*component_storage| {
             component_storage.data.deinit(gpa);
         }
-
         self.components.deinit(gpa);
     }
 
@@ -95,6 +132,30 @@ const Archetype = struct {
         _ = self;
         // @panic("");
         return Iterator(View){};
+    }
+
+    fn removeRow(self: *Archetype, row_id: RowID) void {
+        for (self.components.values()) |*comp_store| {
+            comp_store.removeRow(row_id);
+        }
+    }
+
+    /// Copy a row to another archetype
+    fn copyRow(src: *Archetype, gpa: Allocator, row_id: RowID, dst: *Archetype) !RowID {
+        const new_row_id: RowID = @enumFromInt(dst.entities);
+
+        var it = src.components.iterator();
+        while (it.next()) |entry| {
+            const type_id_ptr = entry.key_ptr;
+            const comp_store_ptr = entry.value_ptr;
+
+            if (dst.components.getPtr(type_id_ptr.*)) |other_comp_store_ptr| {
+                try other_comp_store_ptr.appendBytes(gpa, comp_store_ptr.getConstBytes(row_id));
+            }
+        }
+
+        dst.entities += 1;
+        return new_row_id;
     }
 };
 
@@ -201,10 +262,10 @@ const ECS = struct {
         if (info != .@"struct") @compileError("only supports structs");
 
         const type_id: TypeId = .hash(Component);
-        const entity_ptr = self.entities.get(entity_id).?;
+        const entity_ptr = self.entities.getPtr(entity_id).?;
         const arch_id = entity_ptr.archetype_id;
 
-        const arch = self.archetypes.get(arch_id).?;
+        const arch = self.archetypes.getPtr(arch_id).?;
 
         if (arch.components.contains(type_id)) {
             // entity already has the component
@@ -213,20 +274,44 @@ const ECS = struct {
 
         const new_arch_id = arch_id.xor(type_id);
 
-        if (self.archetypes.getPtr(new_arch_id)) |new_arch| {
+        if (self.archetypes.getPtr(new_arch_id)) |dst_arch| {
             // there exits an arch where we can move the entity
             // remove the entry from the current arch and put in the new arch
-            //
-            _ = new_arch;
-            var comp_it = arch.components.iterator();
-            while (comp_it.next()) |entry| {
-                _ = entry;
-            }
+
+            const new_row = try arch.copyRow(gpa, entity_ptr.row_id, dst_arch);
+            arch.removeRow(entity_ptr.row_id);
+
+            entity_ptr.row_id = new_row;
+            entity_ptr.archetype_id = new_arch_id;
         } else {
             // we need to create a new arch to put the entity in
             // this will be the arch first entity
             var new_arch: Archetype = .empty;
             errdefer new_arch.deinit(gpa);
+
+            // copy entities component data to new arch
+            var comp_it = arch.components.iterator();
+            while (comp_it.next()) |entry| {
+                var new_storage: ComponentStorage = .{
+                    .data = .empty,
+                    .len = 0,
+                    .size = entry.value_ptr.size,
+                };
+                errdefer new_storage.data.deinit(gpa);
+
+                try new_storage.appendBytes(gpa, entry.value_ptr.getConstBytes(entity_ptr.row_id));
+
+                try new_arch.components.put(
+                    gpa,
+                    entry.key_ptr.*, // typeid
+                    new_storage, // component_storage
+                );
+            }
+
+            try self.archetypes.put(gpa, new_arch_id, new_arch);
+
+            entity_ptr.archetype_id = new_arch_id;
+            entity_ptr.row_id = @enumFromInt(new_arch.entities);
         }
     }
 
@@ -243,6 +328,7 @@ test "api" {
 
     const player = try ecs.addEntity(gpa);
     try ecs.addComponent(gpa, player, Position, .{ .x = 3, .y = 3 });
+    try ecs.addComponent(gpa, player, example_structs.Health, .{ .val = 3 });
 }
 
 test "store position" {

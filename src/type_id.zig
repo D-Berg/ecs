@@ -6,7 +6,7 @@ const Velocity = example_structs.Velocity;
 pub const TypeId = enum(u64) {
     _,
 
-    fn hash(comptime T: type) TypeId {
+    pub fn hash(comptime T: type) TypeId {
         const info = @typeInfo(T);
         if (info != .@"struct") @compileError("only supports structs");
         const name = @typeName(T);
