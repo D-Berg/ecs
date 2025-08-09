@@ -128,16 +128,11 @@ const Archetype = struct {
         self.components.deinit(gpa);
     }
 
-    pub fn query(self: *Archetype, comptime View: type) Iterator(View) {
-        _ = self;
-        // @panic("");
-        return Iterator(View){};
-    }
-
     fn removeRow(self: *Archetype, row_id: RowID) void {
         for (self.components.values()) |*comp_store| {
             comp_store.removeRow(row_id);
         }
+        self.entities -= 1;
     }
 
     /// Copy a row to another archetype
@@ -166,20 +161,53 @@ fn Iterator(comptime View: type) type {
         len: usize,
 
         const Self = @This();
+
         pub fn next(self: *Self) ?View {
-            if (self.idx < self.len) {}
+            if (self.idx < self.len) {
+                var view: View = undefined;
+                inline for (@typeInfo(View).@"struct".fields) |field| {
+                    @field(view, field.name) = &@field(self.slice, field.name)[self.idx];
+                }
+
+                self.idx += 1;
+                return view;
+            }
 
             return null;
         }
     };
 }
 
+/// Construct a struct from View where its fields are slices to View field type
 fn Slice(comptime View: type) type {
-    _ = View;
-    // return @Type(.{ .@"struct" =  });
     //
-    // const fields = @typeInfo(View).@"struct".fields.len;
-    return struct {};
+    const info = @typeInfo(View).@"struct";
+    const fields_len = @typeInfo(View).@"struct".fields.len;
+    var fields: [fields_len]std.builtin.Type.StructField = undefined;
+
+    for (info.fields, 0..) |field, i| {
+        const T = switch (@typeInfo(field.type)) {
+            .pointer => |ptr| ptr.child,
+            else => @compileError("EOROOOORRR"),
+        };
+        fields[i] = std.builtin.Type.StructField{
+            .name = field.name,
+            .alignment = field.alignment,
+            .type = []T,
+            .is_comptime = false,
+            .default_value_ptr = null,
+        };
+    }
+
+    const S = std.builtin.Type.Struct{
+        .layout = .auto,
+        .backing_integer = null,
+        .decls = &.{},
+        .fields = &fields,
+        .is_tuple = false,
+    };
+
+    return @Type(.{ .@"struct" = S });
 }
 
 const ArchetypeID = enum(u64) {
@@ -187,14 +215,27 @@ const ArchetypeID = enum(u64) {
     void_arch = 0,
     _,
 
+    /// Compute ArchetypeID based on T fields
     fn from(comptime T: type) ArchetypeID {
         const info = @typeInfo(T);
         if (info != .@"struct") @compileError("Only supports struct");
 
         var id: u64 = 0;
 
-        for (info.@"struct".fields) |field| {
-            id ^= @intFromEnum(TypeId.hash(field.type));
+        inline for (info.@"struct".fields) |field| {
+            const field_info = @typeInfo(field.type);
+            switch (field_info) {
+                .@"struct" => {
+                    id ^= @intFromEnum(TypeId.hash(field.type));
+                },
+                .pointer => |ptr| {
+                    const child_info = @typeInfo(ptr.child);
+                    if (child_info != .@"struct") @compileError("ptr child need to be a struct");
+
+                    id ^= @intFromEnum(TypeId.hash(ptr.child));
+                },
+                else => @compileError("only support ptr"),
+            }
         }
 
         return @enumFromInt(id);
@@ -207,6 +248,7 @@ const ArchetypeID = enum(u64) {
         return @enumFromInt(self_int ^ other_int);
     }
 };
+
 const EntityID = enum(u32) { _ };
 const RowID = enum(u32) { _ };
 
@@ -257,7 +299,6 @@ const ECS = struct {
         comptime Component: type,
         component: Component,
     ) !void {
-        _ = component;
         const info = @typeInfo(Component);
         if (info != .@"struct") @compileError("only supports structs");
 
@@ -265,9 +306,12 @@ const ECS = struct {
         const entity_ptr = self.entities.getPtr(entity_id).?;
         const arch_id = entity_ptr.archetype_id;
 
+        std.debug.print("entity is currently stored in {}\n", .{entity_ptr.*});
+
         const arch = self.archetypes.getPtr(arch_id).?;
 
         if (arch.components.contains(type_id)) {
+            // TODO: update val of component
             // entity already has the component
             return error.EntityAlreadyHasComponent;
         }
@@ -275,15 +319,22 @@ const ECS = struct {
         const new_arch_id = arch_id.xor(type_id);
 
         if (self.archetypes.getPtr(new_arch_id)) |dst_arch| {
+            std.debug.print("adding {s} to existing {}\n", .{ @typeName(Component), new_arch_id });
             // there exits an arch where we can move the entity
             // remove the entry from the current arch and put in the new arch
 
             const new_row = try arch.copyRow(gpa, entity_ptr.row_id, dst_arch);
             arch.removeRow(entity_ptr.row_id);
 
+            try dst_arch.components.getPtr(type_id).?.append(gpa, component);
+
             entity_ptr.row_id = new_row;
             entity_ptr.archetype_id = new_arch_id;
+            dst_arch.entities += 1;
+
+            return;
         } else {
+            std.debug.print("no matching arch mathcing composition, creating new arch {}\n", .{new_arch_id});
             // we need to create a new arch to put the entity in
             // this will be the arch first entity
             var new_arch: Archetype = .empty;
@@ -307,17 +358,46 @@ const ECS = struct {
                     new_storage, // component_storage
                 );
             }
+            arch.removeRow(entity_ptr.row_id);
 
+            var new_comp_store = ComponentStorage.empty(Component);
+
+            try new_comp_store.append(gpa, component);
+
+            try new_arch.components.put(gpa, type_id, new_comp_store);
+
+            const new_row_id: RowID = @enumFromInt(new_arch.entities);
+            new_arch.entities += 1;
             try self.archetypes.put(gpa, new_arch_id, new_arch);
 
             entity_ptr.archetype_id = new_arch_id;
-            entity_ptr.row_id = @enumFromInt(new_arch.entities);
+            entity_ptr.row_id = new_row_id;
+
+            std.debug.print("entity {} is now stored in {}\n", .{ entity_id, entity_ptr.* });
+
+            return;
         }
     }
 
-    // fn query(self: *ECS, comptime View: type) []const View {
-    //     _ = self;
-    // }
+    fn query(self: *ECS, comptime View: type) Iterator(View) {
+        const arch_id = ArchetypeID.from(View);
+
+        std.debug.print("arch id based on view is {}\n", .{arch_id});
+
+        var iterator = Iterator(View){ .slice = undefined, .idx = 0, .len = 0 };
+        if (self.archetypes.get(arch_id)) |arch| {
+            std.debug.print("found arch\n", .{});
+            inline for (@typeInfo(@TypeOf(iterator.slice)).@"struct".fields) |slice_field| {
+                const type_id = TypeId.hash(@typeInfo(slice_field.type).pointer.child);
+                @field(iterator.slice, slice_field.name) = @alignCast(@ptrCast(arch.components.get(type_id).?.data.items));
+            }
+            iterator.len = arch.entities;
+        } else {
+            std.debug.print("couldnt find an arch mathcing qeury\n", .{});
+        }
+
+        return iterator;
+    }
 };
 
 test "api" {
@@ -329,6 +409,21 @@ test "api" {
     const player = try ecs.addEntity(gpa);
     try ecs.addComponent(gpa, player, Position, .{ .x = 3, .y = 3 });
     try ecs.addComponent(gpa, player, example_structs.Health, .{ .val = 3 });
+
+    var arch_it = ecs.archetypes.iterator();
+    while (arch_it.next()) |entry| {
+        std.debug.print("arch_id: {}\n", .{entry.key_ptr.*});
+
+        std.debug.print("has {} entities\n", .{entry.value_ptr.entities});
+    }
+
+    var query = ecs.query(struct { pos: *Position, health: *example_structs.Health });
+    try std.testing.expectEqual(1, query.len);
+    while (query.next()) |view| {
+        view.pos.x += 1;
+        view.health.val += 1;
+        std.debug.print("pos = {}, hp = {}\n", .{ view.pos, view.health.val });
+    }
 }
 
 test "store position" {
@@ -353,12 +448,13 @@ test "store position" {
 
     for (positions) |*p| {
         p.x += 1;
-        std.debug.print("p = {}\n", .{p});
+        // std.debug.print("p = {}\n", .{p});
     }
 
     for (storage.getConstSlice(Position)) |*p| {
         // p.x += 1;
-        std.debug.print("p = {}\n", .{p});
+        _ = p;
+        // std.debug.print("p = {}\n", .{p});
     }
 }
 

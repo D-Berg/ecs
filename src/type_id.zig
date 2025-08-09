@@ -8,8 +8,9 @@ pub const TypeId = enum(u64) {
 
     pub fn hash(comptime T: type) TypeId {
         const info = @typeInfo(T);
-        if (info != .@"struct") @compileError("only supports structs");
+        if (info != .@"struct") @compileError("only supports structs, got: " ++ @typeName(T));
         const name = @typeName(T);
+        std.debug.print("type_name = {s}\n", .{name});
 
         const h = std.hash_map.hashString(name);
 
