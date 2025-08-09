@@ -417,12 +417,23 @@ test "api" {
         std.debug.print("has {} entities\n", .{entry.value_ptr.entities});
     }
 
-    var query = ecs.query(struct { pos: *Position, health: *example_structs.Health });
-    try std.testing.expectEqual(1, query.len);
-    while (query.next()) |view| {
-        view.pos.x += 1;
-        view.health.val += 1;
-        std.debug.print("pos = {}, hp = {}\n", .{ view.pos, view.health.val });
+    {
+        var query = ecs.query(struct { pos: *Position, health: *example_structs.Health });
+        try std.testing.expectEqual(1, query.len);
+        while (query.next()) |view| {
+            view.pos.x += 1;
+            view.health.val += 1;
+            std.debug.print("pos = {}, hp = {}\n", .{ view.pos, view.health.val });
+        }
+    }
+
+    {
+        var query = ecs.query(struct { pos: *Position });
+        try std.testing.expectEqual(1, query.len);
+        while (query.next()) |view| {
+            view.pos.x += 1;
+            std.debug.print("pos = {}", .{view.pos});
+        }
     }
 }
 
