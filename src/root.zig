@@ -60,11 +60,12 @@ const ComponentStorage = struct {
         return std.mem.bytesToValue(Component, self.data.items[start..end]);
     }
 
-    fn getPtr(self: *const ComponentStorage, comptime Component: type, idx: usize) *Component {
-        assert(idx < self.len);
+    fn getPtr(self: *const ComponentStorage, comptime Component: type, row_id: RowID) *Component {
+        const idx = getIdx(row_id, self.size);
+        assert(idx.row < self.len);
         assert(@sizeOf(Component) == self.size);
-        const start = idx * self.size;
-        const end = (idx + 1) * self.size;
+        const start = idx.start;
+        const end = idx.end;
         return @alignCast(std.mem.bytesAsValue(Component, self.data.items[start..end]));
     }
 
@@ -469,6 +470,26 @@ const ECS = struct {
 
         return iterator;
     }
+
+    /// Get a View into an entity in order to change its component data
+    fn getEntity(self: *ECS, entity_id: EntityID, comptime View: type) ?View {
+        if (self.entities.get(entity_id)) |entity_ptr| {
+            if (self.archetypes.getPtr(entity_ptr.archetype_id)) |arch| {
+                var view: View = undefined;
+                inline for (@typeInfo(View).@"struct".fields) |field| {
+                    const FieldType = @typeInfo(field.type).pointer.child;
+                    const type_id = TypeId.hash(FieldType);
+                    const maybe_comp_store: ?*ComponentStorage = arch.components.getPtr(type_id);
+                    if (maybe_comp_store) |comp_store| {
+                        @field(view, field.name) = comp_store.getPtr(FieldType, entity_ptr.row_id);
+                    }
+                }
+                return view;
+            }
+        }
+
+        return null;
+    }
 };
 
 test "api" {
@@ -511,6 +532,10 @@ test "api" {
         }
         try std.testing.expectEqual(1, found_entities);
     }
+
+    const player_data = ecs.getEntity(player, struct { health: *example_structs.Health });
+    try std.testing.expect(player_data != null);
+    try std.testing.expectEqual(4, player_data.?.health.val);
 }
 
 test "store position" {
@@ -521,7 +546,7 @@ test "store position" {
     try storage.append(gpa, Position{ .x = 5, .y = 3 });
     try storage.append(gpa, Position{ .x = 10, .y = 8 });
 
-    const current_pos = storage.getPtr(Position, 0);
+    const current_pos = storage.getPtr(Position, @enumFromInt(0));
 
     try std.testing.expectEqual(5, current_pos.x);
 
