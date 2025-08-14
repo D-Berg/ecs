@@ -45,6 +45,7 @@ const ComponentStorage = struct {
     }
 
     /// add a component by bytes
+    /// increases len by 1
     fn appendBytes(self: *ComponentStorage, gpa: Allocator, bytes: []const u8) !void {
         assert(bytes.len == self.size);
         try self.data.appendSlice(gpa, bytes);
@@ -85,16 +86,21 @@ const ComponentStorage = struct {
     }
 
     fn removeRow(self: *ComponentStorage, row_id: RowID) void {
+        // std.debug.print("comp_store: removing row", .{})
         const idx = getIdx(row_id, self.size);
         var i = idx.end - 1;
         while (idx.start < i) : (i -= 1) {
             _ = self.data.swapRemove(i);
         }
+        _ = self.data.swapRemove(i);
+        self.len -= 1;
     }
 
     const Idx = struct {
         row: usize,
+        /// byte start idx
         start: usize,
+        /// byte end idx
         end: usize,
     };
 
@@ -156,21 +162,78 @@ const Archetype = struct {
 
 fn Iterator(comptime View: type) type {
     return struct {
-        slice: Slice(View),
+        arch_slice: []const Archetype,
+        arch_idx: usize = 0,
+        /// A struct where each field is a slice of Views field type
+        view_slice: Slice(View),
+        /// idx of the entity (row)
         idx: usize,
-        len: usize,
+        rows: usize,
 
         const Self = @This();
 
         pub fn next(self: *Self) ?View {
-            if (self.idx < self.len) {
+            if (self.createView()) |view| {
+                return view;
+            } else {
+                if (self.nextSlice()) |view_slice| {
+                    self.view_slice = view_slice;
+                    return self.createView();
+                }
+            }
+
+            return null;
+        }
+
+        fn createView(self: *Self) ?View {
+            if (self.idx < self.rows) {
                 var view: View = undefined;
                 inline for (@typeInfo(View).@"struct".fields) |field| {
-                    @field(view, field.name) = &@field(self.slice, field.name)[self.idx];
+                    @field(view, field.name) = &@field(self.view_slice, field.name)[self.idx];
                 }
 
                 self.idx += 1;
                 return view;
+            }
+            return null;
+        }
+
+        /// create a new slice and increase arch_idx
+        fn nextSlice(self: *Self) ?Slice(View) {
+            std.debug.print("nextSlice\n", .{});
+            std.debug.print("arch_slice.len: {}\n", .{self.arch_slice.len});
+
+            // find the next archetype having the nesseccary components
+            loop: while (self.arch_idx < self.arch_slice.len) {
+                defer self.arch_idx += 1;
+
+                var view_slice: Slice(View) = undefined;
+                const arch = self.arch_slice[self.arch_idx];
+
+                std.debug.print("arch_idx = {}, contains: {} entities\n", .{
+                    self.arch_idx, arch.entities,
+                });
+
+                inline for (@typeInfo(@TypeOf(self.view_slice)).@"struct".fields) |slice_field| {
+                    const FieldType = @typeInfo(slice_field.type).pointer.child;
+                    const type_id = TypeId.hash(FieldType);
+                    const maybe_comp_storage: ?*ComponentStorage = arch.components.getPtr(type_id);
+                    if (maybe_comp_storage) |comp_storage| {
+                        std.debug.print("comp_store: comp_len = {}, size = {} == byte_len = {}\n", .{
+                            comp_storage.len, comp_storage.size, comp_storage.data.items.len,
+                        });
+                        assert(comp_storage.len * comp_storage.size == comp_storage.data.items.len);
+
+                        // TODO: const slice vs var slice depending on ptr type
+                        @field(view_slice, slice_field.name) = comp_storage.getSlice(FieldType);
+                    } else {
+                        // archetype is missing component -> go to next arch
+                        continue :loop;
+                    }
+                }
+                self.idx = 0;
+                self.rows = arch.entities;
+                return view_slice;
             }
 
             return null;
@@ -179,6 +242,7 @@ fn Iterator(comptime View: type) type {
 }
 
 /// Construct a struct from View where its fields are slices to View field type
+/// converts a `stuct { pos: *Pointer, ... }` to `struct { pos: []Pointer, ... }`
 fn Slice(comptime View: type) type {
     //
     const info = @typeInfo(View).@"struct";
@@ -343,14 +407,15 @@ const ECS = struct {
             // copy entities component data to new arch
             var comp_it = arch.components.iterator();
             while (comp_it.next()) |entry| {
+                const old_storage_ptr: *ComponentStorage = entry.value_ptr;
                 var new_storage: ComponentStorage = .{
                     .data = .empty,
                     .len = 0,
-                    .size = entry.value_ptr.size,
+                    .size = old_storage_ptr.size,
                 };
                 errdefer new_storage.data.deinit(gpa);
 
-                try new_storage.appendBytes(gpa, entry.value_ptr.getConstBytes(entity_ptr.row_id));
+                try new_storage.appendBytes(gpa, old_storage_ptr.getConstBytes(entity_ptr.row_id));
 
                 try new_arch.components.put(
                     gpa,
@@ -380,20 +445,26 @@ const ECS = struct {
     }
 
     fn query(self: *ECS, comptime View: type) Iterator(View) {
+        // 1. iterate over all archetpes,
+        // 2. check if archetype contains the field types
+        // 3. construct a Slice(View) for the 1st archetype
         const arch_id = ArchetypeID.from(View);
 
         std.debug.print("arch id based on view is {}\n", .{arch_id});
 
-        var iterator = Iterator(View){ .slice = undefined, .idx = 0, .len = 0 };
-        if (self.archetypes.get(arch_id)) |arch| {
-            std.debug.print("found arch\n", .{});
-            inline for (@typeInfo(@TypeOf(iterator.slice)).@"struct".fields) |slice_field| {
-                const type_id = TypeId.hash(@typeInfo(slice_field.type).pointer.child);
-                @field(iterator.slice, slice_field.name) = @alignCast(@ptrCast(arch.components.get(type_id).?.data.items));
-            }
-            iterator.len = arch.entities;
+        var iterator = Iterator(View){
+            .arch_slice = self.archetypes.values(),
+            .arch_idx = 0,
+            .view_slice = undefined,
+            .idx = 0,
+            .rows = 0,
+        };
+
+        if (iterator.nextSlice()) |view_slice| {
+            std.debug.print("query: created slice\n", .{});
+            iterator.view_slice = view_slice;
         } else {
-            std.debug.print("couldnt find an arch mathcing qeury\n", .{});
+            std.debug.print("query: couldnt create slice\n", .{});
         }
 
         return iterator;
@@ -418,22 +489,27 @@ test "api" {
     }
 
     {
+        var found_entities: usize = 0;
         var query = ecs.query(struct { pos: *Position, health: *example_structs.Health });
-        try std.testing.expectEqual(1, query.len);
         while (query.next()) |view| {
             view.pos.x += 1;
             view.health.val += 1;
             std.debug.print("pos = {}, hp = {}\n", .{ view.pos, view.health.val });
+            found_entities += 1;
         }
+        try std.testing.expectEqual(1, found_entities);
     }
 
     {
+        var found_entities: usize = 0;
         var query = ecs.query(struct { pos: *Position });
-        try std.testing.expectEqual(1, query.len);
+        std.debug.print("can we get here, yes\n", .{});
         while (query.next()) |view| {
             view.pos.x += 1;
             std.debug.print("pos = {}", .{view.pos});
+            found_entities += 1;
         }
+        try std.testing.expectEqual(1, found_entities);
     }
 }
 
