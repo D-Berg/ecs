@@ -131,10 +131,11 @@ const Archetype = struct {
         var it = src.components.iterator();
         while (it.next()) |entry| {
             const type_id_ptr = entry.key_ptr;
-            const comp_store_ptr = entry.value_ptr;
+            const src_comp_store_ptr = entry.value_ptr;
 
-            if (dst.components.getPtr(type_id_ptr.*)) |other_comp_store_ptr| {
-                try other_comp_store_ptr.appendBytes(gpa, comp_store_ptr.getConstBytes(row_id));
+            if (dst.components.getPtr(type_id_ptr.*)) |dst_comp_store_ptr| {
+                try dst_comp_store_ptr.appendBytes(gpa, src_comp_store_ptr.getConstBytes(row_id));
+                assert(dst_comp_store_ptr.len == dst.entities + 1);
             }
         }
 
@@ -365,7 +366,6 @@ pub const World = struct {
 
             entity_ptr.row_id = new_row;
             entity_ptr.archetype_id = new_arch_id;
-            dst_arch.entities += 1;
 
             return;
         } else {
