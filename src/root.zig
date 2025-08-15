@@ -1,11 +1,7 @@
-//! By convention, root.zig is the root source file when making a library. If
-//! you are making an executable, the convention is to delete this file and
-//! start with main.zig instead.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const assert = std.debug.assert;
-const _ = std.MultiArrayList;
 
 /// Column in a table
 const ComponentStorage = struct {
@@ -73,7 +69,6 @@ const ComponentStorage = struct {
     }
 
     fn removeRow(self: *ComponentStorage, row_id: RowID) void {
-        // std.debug.print("comp_store: removing row", .{})
         const idx = getIdx(row_id, self.size);
         var i = idx.end - 1;
         while (idx.start < i) : (i -= 1) {
@@ -187,28 +182,19 @@ fn Iterator(comptime View: type) type {
 
         /// create a new slice and increase arch_idx
         fn nextSlice(self: *Self) ?Slice(View) {
-            std.debug.print("nextSlice\n", .{});
-            std.debug.print("arch_slice.len: {}\n", .{self.arch_slice.len});
 
             // find the next archetype having the nesseccary components
             loop: while (self.arch_idx < self.arch_slice.len) {
                 defer self.arch_idx += 1;
 
-                var view_slice: Slice(View) = undefined;
                 const arch = self.arch_slice[self.arch_idx];
 
-                std.debug.print("arch_idx = {}, contains: {} entities\n", .{
-                    self.arch_idx, arch.entities,
-                });
-
+                var view_slice: Slice(View) = undefined;
                 inline for (@typeInfo(@TypeOf(self.view_slice)).@"struct".fields) |slice_field| {
                     const FieldType = @typeInfo(slice_field.type).pointer.child;
                     const type_id = TypeId.hash(FieldType);
                     const maybe_comp_storage: ?*ComponentStorage = arch.components.getPtr(type_id);
                     if (maybe_comp_storage) |comp_storage| {
-                        std.debug.print("comp_store: comp_len = {}, size = {} == byte_len = {}\n", .{
-                            comp_storage.len, comp_storage.size, comp_storage.data.items.len,
-                        });
                         assert(comp_storage.len * comp_storage.size == comp_storage.data.items.len);
 
                         // TODO: const slice vs var slice depending on ptr type
@@ -357,8 +343,6 @@ const ECS = struct {
         const entity_ptr = self.entities.getPtr(entity_id).?;
         const arch_id = entity_ptr.archetype_id;
 
-        std.debug.print("entity is currently stored in {}\n", .{entity_ptr.*});
-
         const arch = self.archetypes.getPtr(arch_id).?;
 
         if (arch.components.contains(type_id)) {
@@ -370,7 +354,6 @@ const ECS = struct {
         const new_arch_id = arch_id.xor(type_id);
 
         if (self.archetypes.getPtr(new_arch_id)) |dst_arch| {
-            std.debug.print("adding {s} to existing {}\n", .{ @typeName(Component), new_arch_id });
             // there exits an arch where we can move the entity
             // remove the entry from the current arch and put in the new arch
 
@@ -385,7 +368,6 @@ const ECS = struct {
 
             return;
         } else {
-            std.debug.print("no matching arch mathcing composition, creating new arch {}\n", .{new_arch_id});
             // we need to create a new arch to put the entity in
             // this will be the arch first entity
             var new_arch: Archetype = .empty;
@@ -425,20 +407,11 @@ const ECS = struct {
             entity_ptr.archetype_id = new_arch_id;
             entity_ptr.row_id = new_row_id;
 
-            std.debug.print("entity {} is now stored in {}\n", .{ entity_id, entity_ptr.* });
-
             return;
         }
     }
 
     fn query(self: *ECS, comptime View: type) Iterator(View) {
-        // 1. iterate over all archetpes,
-        // 2. check if archetype contains the field types
-        // 3. construct a Slice(View) for the 1st archetype
-        const arch_id = ArchetypeID.from(View);
-
-        std.debug.print("arch id based on view is {}\n", .{arch_id});
-
         var iterator = Iterator(View){
             .arch_slice = self.archetypes.values(),
             .arch_idx = 0,
@@ -448,10 +421,7 @@ const ECS = struct {
         };
 
         if (iterator.nextSlice()) |view_slice| {
-            std.debug.print("query: created slice\n", .{});
             iterator.view_slice = view_slice;
-        } else {
-            std.debug.print("query: couldnt create slice\n", .{});
         }
 
         return iterator;
@@ -465,6 +435,7 @@ const ECS = struct {
                 inline for (@typeInfo(View).@"struct".fields) |field| {
                     const FieldType = @typeInfo(field.type).pointer.child;
                     const type_id = TypeId.hash(FieldType);
+
                     const maybe_comp_store: ?*ComponentStorage = arch.components.getPtr(type_id);
                     if (maybe_comp_store) |comp_store| {
                         @field(view, field.name) = comp_store.getPtr(FieldType, entity_ptr.row_id);
@@ -503,20 +474,12 @@ test "api" {
     try ecs.addComponent(gpa, player, Position, .{ .x = 3, .y = 3 });
     try ecs.addComponent(gpa, player, Health, .{ .val = 3 });
 
-    var arch_it = ecs.archetypes.iterator();
-    while (arch_it.next()) |entry| {
-        std.debug.print("arch_id: {}\n", .{entry.key_ptr.*});
-
-        std.debug.print("has {} entities\n", .{entry.value_ptr.entities});
-    }
-
     {
         var found_entities: usize = 0;
         var query = ecs.query(struct { pos: *Position, health: *Health });
         while (query.next()) |view| {
             view.pos.x += 1;
             view.health.val += 1;
-            std.debug.print("pos = {}, hp = {}\n", .{ view.pos, view.health.val });
             found_entities += 1;
         }
         try std.testing.expectEqual(1, found_entities);
@@ -525,10 +488,8 @@ test "api" {
     {
         var found_entities: usize = 0;
         var query = ecs.query(struct { pos: *Position });
-        std.debug.print("can we get here, yes\n", .{});
         while (query.next()) |view| {
             view.pos.x += 1;
-            std.debug.print("pos = {}", .{view.pos});
             found_entities += 1;
         }
         try std.testing.expectEqual(1, found_entities);
@@ -566,13 +527,11 @@ test "store position" {
 
     for (positions) |*p| {
         p.x += 1;
-        // std.debug.print("p = {}\n", .{p});
     }
 
     for (storage.getConstSlice(Position)) |*p| {
         // p.x += 1;
         _ = p;
-        // std.debug.print("p = {}\n", .{p});
     }
 }
 
@@ -583,29 +542,9 @@ const TypeId = enum(u64) {
         const info = @typeInfo(T);
         if (info != .@"struct") @compileError("only supports structs, got: " ++ @typeName(T));
         const name = @typeName(T);
-        std.debug.print("type_name = {s}\n", .{name});
 
         const h = std.hash_map.hashString(name);
 
         return @enumFromInt(h);
     }
 };
-
-const Struct = std.builtin.Type.Struct;
-
-test "typeid" {
-    const Position = struct {
-        x: i32,
-        y: i32,
-    };
-    const Velocity = struct {
-        x: i32,
-        y: i32,
-    };
-
-    const position_hash: TypeId = .hash(Position);
-    const velocity_hash: TypeId = .hash(Velocity);
-
-    std.debug.print("hash = {}\n", .{position_hash});
-    std.debug.print("hash = {}\n", .{velocity_hash});
-}
