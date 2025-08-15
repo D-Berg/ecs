@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
 
     const linkage = b.option(std.builtin.LinkMode, "linkage", "Specify link mode of the lib") orelse .static;
 
-    const lib_mod = b.addModule("ecs", .{
+    const lib_mod = b.addModule("ants", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) void {
 
     const lib = b.addLibrary(.{
         .linkage = linkage,
-        .name = "ecs",
+        .name = "ants",
         .root_module = lib_mod,
     });
 

@@ -1,9 +1,9 @@
 .{
-    .name = .ecs,
+    .name = .ants,
 
     .version = "0.1.0",
 
-    .fingerprint = 0x3681c83b4b990910, // Changing this has security and trust implications.
+    .fingerprint = 0x62c83524606f0530, // Changing this has security and trust implications.
 
     .minimum_zig_version = "0.14.1",
 

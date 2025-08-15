@@ -468,16 +468,16 @@ test "api" {
 
     const gpa = std.testing.allocator;
 
-    var ecs = try World.init(gpa);
-    defer ecs.deinit(gpa);
+    var world = try World.init(gpa);
+    defer world.deinit(gpa);
 
-    const player = try ecs.addEntity(gpa);
-    try ecs.addComponent(gpa, player, Position, .{ .x = 3, .y = 3 });
-    try ecs.addComponent(gpa, player, Health, .{ .val = 3 });
+    const player = try world.addEntity(gpa);
+    try world.addComponent(gpa, player, Position, .{ .x = 3, .y = 3 });
+    try world.addComponent(gpa, player, Health, .{ .val = 3 });
 
     {
         var found_entities: usize = 0;
-        var query = ecs.query(struct { pos: *Position, health: *Health });
+        var query = world.query(struct { pos: *Position, health: *Health });
         while (query.next()) |view| {
             view.pos.x += 1;
             view.health.val += 1;
@@ -488,7 +488,7 @@ test "api" {
 
     {
         var found_entities: usize = 0;
-        var query = ecs.query(struct { pos: *Position });
+        var query = world.query(struct { pos: *Position });
         while (query.next()) |view| {
             view.pos.x += 1;
             found_entities += 1;
@@ -496,7 +496,7 @@ test "api" {
         try std.testing.expectEqual(1, found_entities);
     }
 
-    const player_data = ecs.getEntity(player, struct { health: *Health });
+    const player_data = world.getEntity(player, struct { health: *Health });
     try std.testing.expect(player_data != null);
     try std.testing.expectEqual(4, player_data.?.health.val);
 }
