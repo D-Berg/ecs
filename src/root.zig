@@ -110,7 +110,7 @@ const Archetype = struct {
         .entities = 0,
     };
 
-    pub fn deinit(self: *Archetype, gpa: Allocator) void {
+    fn deinit(self: *Archetype, gpa: Allocator) void {
         for (self.components.values()) |*component_storage| {
             component_storage.data.deinit(gpa);
         }
@@ -290,7 +290,7 @@ const ArchetypeID = enum(u64) {
 const EntityID = enum(u32) { _ };
 const RowID = enum(u32) { _ };
 
-const ECS = struct {
+pub const World = struct {
     archetypes: std.AutoArrayHashMapUnmanaged(ArchetypeID, Archetype),
     /// Mapping of which row in which archetype the entity is stored in
     entities: std.AutoArrayHashMapUnmanaged(EntityID, Pointer),
@@ -300,20 +300,20 @@ const ECS = struct {
         row_id: RowID,
     };
 
-    pub fn init(gpa: Allocator) !ECS {
-        var self: ECS = .{ .archetypes = .empty, .entities = .empty };
+    pub fn init(gpa: Allocator) !World {
+        var self: World = .{ .archetypes = .empty, .entities = .empty };
         try self.archetypes.put(gpa, .void_arch, .empty);
         return self;
     }
 
-    pub fn deinit(self: *ECS, gpa: Allocator) void {
+    pub fn deinit(self: *World, gpa: Allocator) void {
         for (self.archetypes.values()) |*arch| arch.deinit(gpa);
         self.archetypes.deinit(gpa);
         self.entities.deinit(gpa);
     }
 
     /// adds an entity with no components
-    pub fn addEntity(self: *ECS, gpa: Allocator) !EntityID {
+    pub fn addEntity(self: *World, gpa: Allocator) !EntityID {
         const arch = self.archetypes.getPtr(.void_arch).?;
 
         const ent_id: EntityID = @enumFromInt(self.entities.count());
@@ -331,7 +331,7 @@ const ECS = struct {
 
     /// Add a component to an entity
     pub fn addComponent(
-        self: *ECS,
+        self: *World,
         gpa: Allocator,
         entity_id: EntityID,
         comptime Component: type,
@@ -412,7 +412,7 @@ const ECS = struct {
         }
     }
 
-    fn query(self: *ECS, comptime View: type) Iterator(View) {
+    pub fn query(self: *World, comptime View: type) Iterator(View) {
         var iterator = Iterator(View){
             .arch_slice = self.archetypes.values(),
             .arch_idx = 0,
@@ -429,7 +429,7 @@ const ECS = struct {
     }
 
     /// Get a View into an entity in order to change its component data
-    fn getEntity(self: *ECS, entity_id: EntityID, comptime View: type) ?View {
+    pub fn getEntity(self: *World, entity_id: EntityID, comptime View: type) ?View {
         if (self.entities.get(entity_id)) |entity_ptr| {
             if (self.archetypes.getPtr(entity_ptr.archetype_id)) |arch| {
                 var view: View = undefined;
@@ -468,7 +468,7 @@ test "api" {
 
     const gpa = std.testing.allocator;
 
-    var ecs = try ECS.init(gpa);
+    var ecs = try World.init(gpa);
     defer ecs.deinit(gpa);
 
     const player = try ecs.addEntity(gpa);
@@ -539,7 +539,7 @@ test "store position" {
 const TypeId = enum(u64) {
     _,
 
-    pub fn hash(comptime T: type) TypeId {
+    fn hash(comptime T: type) TypeId {
         const info = @typeInfo(T);
         if (info != .@"struct") @compileError("only supports structs, got: " ++ @typeName(T));
         const name = @typeName(T);
