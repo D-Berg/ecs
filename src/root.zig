@@ -3,7 +3,8 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 const assert = std.debug.assert;
 
-/// Column in a table
+/// Type erased storage of a singular type of Components,
+/// equivalent of a column in a table
 const ComponentStorage = struct {
     size: usize,
     len: usize,
