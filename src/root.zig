@@ -173,7 +173,13 @@ fn Iterator(comptime View: type) type {
             if (self.idx < self.rows) {
                 var view: View = undefined;
                 inline for (@typeInfo(View).@"struct".fields) |field| {
-                    @field(view, field.name) = &@field(self.view_slice, field.name)[self.idx];
+                    @field(view, field.name) = switch (@typeInfo(field.type)) {
+                        .pointer => &@field(self.view_slice, field.name)[self.idx],
+                        .@"enum",
+                        .@"struct",
+                        => @field(self.view_slice, field.name)[self.idx],
+                        else => @compileError("wtf is that type"),
+                    };
                 }
 
                 self.idx += 1;
@@ -191,6 +197,8 @@ fn Iterator(comptime View: type) type {
 
                 const arch = self.arch_slice[self.arch_idx];
 
+                if (arch.entities == 0) continue :loop;
+
                 var view_slice: Slice(View) = undefined;
                 inline for (@typeInfo(@TypeOf(self.view_slice)).@"struct".fields) |slice_field| {
                     const FieldType = @typeInfo(slice_field.type).pointer.child;
@@ -202,7 +210,7 @@ fn Iterator(comptime View: type) type {
                         // TODO: const slice vs var slice depending on ptr type
                         @field(view_slice, slice_field.name) = comp_storage.getSlice(FieldType);
                     } else {
-                        // archetype is missing component -> go to next arch
+                        // archetype is missing some component -> go to next arch
                         continue :loop;
                     }
                 }
@@ -227,6 +235,9 @@ fn Slice(comptime View: type) type {
     for (info.fields, 0..) |field, i| {
         const T = switch (@typeInfo(field.type)) {
             .pointer => |ptr| ptr.child,
+            .@"struct",
+            .@"enum",
+            => field.type,
             else => @compileError("EOROOOORRR"),
         };
         fields[i] = std.builtin.Type.StructField{
@@ -288,7 +299,7 @@ const ArchetypeID = enum(u64) {
     }
 };
 
-const EntityID = enum(u32) { _ };
+pub const EntityID = enum(u32) { _ };
 const RowID = enum(u32) { _ };
 
 pub const World = struct {
@@ -339,7 +350,15 @@ pub const World = struct {
         component: Component,
     ) !void {
         const info = @typeInfo(Component);
-        if (info != .@"struct") @compileError("only supports structs");
+        // if (info != .@"struct" or info != .@"enum") ;
+        switch (info) {
+            .@"struct",
+            .@"enum",
+            => {},
+            inline else => |kind| {
+                @compileError("not supported for " ++ kind);
+            },
+        }
 
         const type_id: TypeId = .hash(Component);
         const entity_ptr = self.entities.getPtr(entity_id).?;
@@ -541,7 +560,20 @@ const TypeId = enum(u64) {
 
     fn hash(comptime T: type) TypeId {
         const info = @typeInfo(T);
-        if (info != .@"struct") @compileError("only supports structs, got: " ++ @typeName(T));
+        // if (info != .@"struct") @compileError("only supports structs, got: " ++ @typeName(T));
+        switch (info) {
+            .@"struct",
+            .@"enum",
+            => {},
+            else => |kind| {
+                @compileError(
+                    std.fmt.comptimePrint("not supported for {s}, T = {s}", .{
+                        @tagName(kind),
+                        @typeName(T),
+                    }),
+                );
+            },
+        }
         const name = @typeName(T);
 
         const h = std.hash_map.hashString(name);
