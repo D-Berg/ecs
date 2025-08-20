@@ -467,6 +467,16 @@ pub const World = struct {
 
         return null;
     }
+
+    pub fn removeEntity(self: *World, entity_id: EntityID) void {
+        if (self.entities.get(entity_id)) |ptr| {
+            if (self.archetypes.getPtr(ptr.archetype_id)) |arch| {
+                arch.removeRow(ptr.row_id);
+            }
+
+            assert(self.entities.swapRemove(entity_id));
+        }
+    }
 };
 
 test "api" {
