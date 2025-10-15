@@ -341,11 +341,12 @@ pub const World = struct {
         const ent_id: EntityID = @enumFromInt(self.entities.count());
         const row_id: RowID = @enumFromInt(arch.entities);
 
-        try self.entities.put(gpa, ent_id, .{
+        const gop = try self.entities.getOrPut(gpa, ent_id);
+        if (gop.found_existing) return error.EntityIDCollision;
+        gop.value_ptr.* = .{
             .archetype_id = .void_arch,
             .row_id = row_id,
-        });
-
+        };
         arch.entities += 1;
 
         return ent_id;
