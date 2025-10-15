@@ -54,12 +54,12 @@ const ComponentStorage = struct {
 
     fn getSlice(self: *const ComponentStorage, comptime Component: type) []Component {
         assert(@sizeOf(Component) == self.size);
-        return @alignCast(@ptrCast(self.data.items));
+        return @ptrCast(@alignCast(self.data.items));
     }
 
     fn getConstSlice(self: *const ComponentStorage, comptime Component: type) []const Component {
         assert(@sizeOf(Component) == self.size);
-        return @alignCast(@ptrCast(self.data.items));
+        return @ptrCast(@alignCast(self.data.items));
     }
 
     fn getConstBytes(self: *const ComponentStorage, row_id: RowID) []const u8 {
@@ -156,6 +156,7 @@ fn Iterator(comptime View: type) type {
 
         const Self = @This();
 
+        /// Get the next View into an entities data that matches the query
         pub fn next(self: *Self) ?View {
             if (self.createView()) |view| {
                 return view;
