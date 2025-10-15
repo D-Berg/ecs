@@ -18,13 +18,22 @@ const ComponentStorage = struct {
         };
     }
 
-    fn append(self: *ComponentStorage, gpa: Allocator, value: anytype) !void {
+    fn ensureUnusedCapacity(self: *ComponentStorage, gpa: Allocator, n: usize) !void {
+        try self.data.ensureUnusedCapacity(gpa, self.size * n);
+    }
+
+    fn appendAssumeCapacity(self: *ComponentStorage, value: anytype) void {
         const bytes = std.mem.asBytes(&value);
-        try self.data.appendSlice(gpa, bytes);
+        self.data.appendSliceAssumeCapacity(bytes);
 
         assert(bytes.len / self.size == 1);
 
         self.len += 1;
+    }
+
+    fn append(self: *ComponentStorage, gpa: Allocator, value: anytype) !void {
+        try self.ensureUnusedCapacity(gpa, 1);
+        self.appendAssumeCapacity(value);
     }
 
     /// add a component by bytes
@@ -365,9 +374,7 @@ pub const World = struct {
         const entity_ptr = self.entities.getPtr(entity_id).?;
         const arch_id = entity_ptr.archetype_id;
 
-        const arch = self.archetypes.getPtr(arch_id).?;
-
-        if (arch.components.contains(type_id)) {
+        if (self.archetypes.getPtr(arch_id).?.components.contains(type_id)) {
             // TODO: update val of component
             // entity already has the component
             return error.EntityAlreadyHasComponent;
@@ -375,24 +382,38 @@ pub const World = struct {
 
         const new_arch_id = arch_id.xor(type_id);
 
-        if (self.archetypes.getPtr(new_arch_id)) |dst_arch| {
+        try self.archetypes.ensureUnusedCapacity(gpa, 1);
+        const gop = self.archetypes.getOrPutAssumeCapacity(new_arch_id);
+        const arch = self.archetypes.getPtr(arch_id).?;
+        if (gop.found_existing) {
             // there exits an arch where we can move the entity
             // remove the entry from the current arch and put in the new arch
+            const dst_arch = gop.value_ptr;
+
+            const component_storage = dst_arch.components.getPtr(type_id).?;
+
+            try component_storage.ensureUnusedCapacity(gpa, 1);
 
             const new_row = try arch.copyRow(gpa, entity_ptr.row_id, dst_arch);
+            errdefer comptime unreachable;
+
+            // remove old data
             arch.removeRow(entity_ptr.row_id);
 
-            try dst_arch.components.getPtr(type_id).?.append(gpa, component);
+            component_storage.appendAssumeCapacity(component);
 
             entity_ptr.row_id = new_row;
             entity_ptr.archetype_id = new_arch_id;
-
-            return;
         } else {
             // we need to create a new arch to put the entity in
             // this will be the arch first entity
-            var new_arch: Archetype = .empty;
-            errdefer new_arch.deinit(gpa);
+            gop.value_ptr.* = .empty;
+            const new_arch = gop.value_ptr;
+
+            // reserve
+            var new_comp_store = ComponentStorage.empty(Component);
+            try new_comp_store.ensureUnusedCapacity(gpa, 1);
+            try new_arch.components.ensureUnusedCapacity(gpa, arch.components.entries.len + 1);
 
             // copy entities component data to new arch
             var comp_it = arch.components.iterator();
@@ -407,28 +428,22 @@ pub const World = struct {
 
                 try new_storage.appendBytes(gpa, old_storage_ptr.getConstBytes(entity_ptr.row_id));
 
-                try new_arch.components.put(
-                    gpa,
+                new_arch.components.putAssumeCapacity(
                     entry.key_ptr.*, // typeid
                     new_storage, // component_storage
                 );
             }
+            errdefer comptime unreachable;
             arch.removeRow(entity_ptr.row_id);
 
-            var new_comp_store = ComponentStorage.empty(Component);
-
-            try new_comp_store.append(gpa, component);
-
-            try new_arch.components.put(gpa, type_id, new_comp_store);
+            new_comp_store.appendAssumeCapacity(component);
+            new_arch.components.putAssumeCapacity(type_id, new_comp_store);
 
             const new_row_id: RowID = @enumFromInt(new_arch.entities);
             new_arch.entities += 1;
-            try self.archetypes.put(gpa, new_arch_id, new_arch);
 
             entity_ptr.archetype_id = new_arch_id;
             entity_ptr.row_id = new_row_id;
-
-            return;
         }
     }
 
