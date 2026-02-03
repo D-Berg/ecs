@@ -240,7 +240,9 @@ fn Slice(comptime View: type) type {
     //
     const info = @typeInfo(View).@"struct";
     const fields_len = @typeInfo(View).@"struct".fields.len;
-    var fields: [fields_len]std.builtin.Type.StructField = undefined;
+    var field_names: [fields_len][]const u8 = undefined;
+    var field_types: [fields_len]type = undefined;
+    var field_attrs: [fields_len]std.builtin.Type.StructField.Attributes = undefined;
 
     for (info.fields, 0..) |field, i| {
         const T = switch (@typeInfo(field.type)) {
@@ -250,24 +252,16 @@ fn Slice(comptime View: type) type {
             => field.type,
             else => @compileError("EOROOOORRR"),
         };
-        fields[i] = std.builtin.Type.StructField{
-            .name = field.name,
-            .alignment = field.alignment,
-            .type = []T,
-            .is_comptime = false,
+        field_names[i] = field.name;
+        field_types[i] = []T;
+        field_attrs[i] = .{
+            .@"comptime" = field.is_comptime,
+            .@"align" = field.alignment,
             .default_value_ptr = null,
         };
     }
 
-    const S = std.builtin.Type.Struct{
-        .layout = .auto,
-        .backing_integer = null,
-        .decls = &.{},
-        .fields = &fields,
-        .is_tuple = false,
-    };
-
-    return @Type(.{ .@"struct" = S });
+    return @Struct(.auto, null, &field_names, &field_types, &field_attrs);
 }
 
 const ArchetypeID = enum(u64) {
